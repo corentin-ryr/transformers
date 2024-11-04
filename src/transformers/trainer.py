@@ -2070,6 +2070,21 @@ class Trainer:
 
         self.is_in_train = True
 
+        # This might change the seed so needs to run first.
+        self._hp_search_setup(trial)
+        self._train_batch_size = self.args.train_batch_size
+
+        # Model re-init
+        if self.model_init is not None:
+            # Seed must be set before instantiating the model when using model_init.
+            enable_full_determinism(self.args.seed) if self.args.full_determinism else set_seed(self.args.seed)
+            del self.model
+            torch.cuda.empty_cache()
+            self.model = self.call_model_init(trial)
+            # Reinitializes optimizer and scheduler
+            self.optimizer, self.lr_scheduler = None, None
+            self.model_wrapped = self.model
+
         # Attach NEFTune hooks if necessary
         if self.neftune_noise_alpha is not None:
             self.model = self._activate_neftune(self.model)
@@ -2088,19 +2103,6 @@ class Trainer:
             )
         if len(kwargs) > 0:
             raise TypeError(f"train() received got unexpected keyword arguments: {', '.join(list(kwargs.keys()))}.")
-        # This might change the seed so needs to run first.
-        self._hp_search_setup(trial)
-        self._train_batch_size = self.args.train_batch_size
-
-        # Model re-init
-        model_reloaded = False
-        if self.model_init is not None:
-            # Seed must be set before instantiating the model when using model_init.
-            enable_full_determinism(self.args.seed) if self.args.full_determinism else set_seed(self.args.seed)
-            self.model = self.call_model_init(trial)
-            model_reloaded = True
-            # Reinitializes optimizer and scheduler
-            self.optimizer, self.lr_scheduler = None, None
 
         # Load potential model checkpoint
         if isinstance(resume_from_checkpoint, bool) and resume_from_checkpoint:
@@ -2115,12 +2117,6 @@ class Trainer:
             state = TrainerState.load_from_json(os.path.join(resume_from_checkpoint, TRAINER_STATE_NAME))
             if state.train_batch_size is not None:
                 self._train_batch_size = state.train_batch_size
-
-        # If model was re-initialized, put it on the right device and update self.model_wrapped
-        if model_reloaded:
-            if self.place_model_on_device:
-                self._move_model_to_device(self.model, args.device)
-            self.model_wrapped = self.model
 
         inner_training_loop = find_executable_batch_size(
             self._inner_training_loop, self._train_batch_size, args.auto_find_batch_size
